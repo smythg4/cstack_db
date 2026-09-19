@@ -11,7 +11,6 @@
    in the Deferred Improvements list below, not into the code.
 
 ## Deferred Improvements (Phase 2 candidates)
-- Result<T, E> + `?` instead of status-enum-and-manual-check
 - NodeType enum instead of byte-flag branching
 - Cursor<'a> borrowing from Table, vs. index-based page handles
 - Page pool for the pager (single-threaded version of the
