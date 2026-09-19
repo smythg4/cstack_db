@@ -24,7 +24,7 @@ Concurrency control (coarse RwLock, later crabbing if warranted) belongs
 to the follow-up DBMS project, not here.
 
 ## Progress
-- [ ] Part 1-2: REPL + SQL compiler skeleton
+- [x] Part 1-2: REPL + SQL compiler skeleton
 - [ ] Part 3-5: single-table storage, persistence
 - [ ] Part 6-7: cursor abstraction
 - [ ] Part 8-10: B-tree leaf nodes

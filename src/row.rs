@@ -35,8 +35,7 @@ impl<const N: usize> TryFrom<&str> for VarChar<N> {
     type Error = PrepareError;
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         if value.len() > N {
-            // TODO: Update with `StringTooLong` variant
-            return Err(PrepareError::SyntaxError);
+            return Err(PrepareError::StringTooLong);
         }
         let mut data = [0u8; N];
         data[..value.len()].copy_from_slice(value.as_bytes());
@@ -99,5 +98,17 @@ impl Debug for Row {
             .field("username", &String::from(&self.username))
             .field("email", &String::from(&self.email))
             .finish()
+    }
+}
+
+impl std::fmt::Display for Row {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "({}, {}, {})",
+            self.id,
+            String::from(&self.username),
+            String::from(&self.email)
+        )
     }
 }

@@ -49,11 +49,17 @@ fn prepare_insert(input: &str) -> Result<Row, PrepareError> {
         .filter(|c| *c == "insert")
         .ok_or(PrepareError::SyntaxError)?;
 
-    let id: u32 = parts
+    let id: i64 = parts
         .next()
         .ok_or(PrepareError::SyntaxError)?
         .parse()
         .map_err(|_| PrepareError::SyntaxError)?;
+
+    if id < 0 {
+        return Err(PrepareError::NegativeId);
+    }
+
+    let id: u32 = id.try_into().map_err(|_| PrepareError::SyntaxError)?;
 
     let username = parts.next().ok_or(PrepareError::SyntaxError)?;
     let email = parts.next().ok_or(PrepareError::SyntaxError)?;
@@ -83,7 +89,7 @@ fn execute_select(table: &mut Table) -> Result<(), ExecuteError> {
     for i in 0..table.len() {
         let mut row_reader = table.get_row(i).ok_or(ExecuteError::PageNotFound)?;
         let row = Row::deserialize_row(&mut row_reader)?;
-        println!("{:?}", row);
+        println!("{row}");
     }
     Ok(())
 }

@@ -10,6 +10,10 @@ pub enum MetaCommandError {
 pub enum PrepareError {
     #[error("Syntax error. Could not parse statement.")]
     SyntaxError,
+    #[error("String is too long.")]
+    StringTooLong,
+    #[error("ID must be positive.")]
+    NegativeId,
     #[error("Unrecognized keyword at start of '{0}'.")]
     Unrecognized(String),
 }
