@@ -1,4 +1,5 @@
-use crate::constants::*;
+use crate::cursor::CursorError;
+use crate::table::TableError;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -29,6 +30,8 @@ pub enum ExecuteError {
     IoError(#[from] std::io::Error),
     #[error(transparent)]
     TableError(#[from] TableError),
+    #[error(transparent)]
+    CursorError(#[from] CursorError),
 }
 
 impl ExecuteError {
@@ -38,22 +41,7 @@ impl ExecuteError {
             ExecuteError::PageNotFound => true,
             ExecuteError::IoError(_) => true,
             ExecuteError::TableError(_) => true,
+            ExecuteError::CursorError(_) => true,
         }
     }
-}
-
-#[derive(Error, Debug)]
-pub enum PagerError {
-    #[error(transparent)]
-    IoError(#[from] std::io::Error),
-    #[error("Tried to fetch page number out of bounds. {TABLE_MAX_PAGES}")]
-    OutOfBounds,
-    #[error("Tried to flush null page")]
-    NullFlush,
-}
-
-#[derive(Error, Debug)]
-pub enum TableError {
-    #[error(transparent)]
-    PagerError(#[from] PagerError),
 }

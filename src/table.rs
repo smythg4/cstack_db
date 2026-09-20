@@ -1,8 +1,24 @@
 use crate::constants::*;
-use crate::errors::*;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, Write};
 use std::path::Path;
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum PagerError {
+    #[error(transparent)]
+    IoError(#[from] std::io::Error),
+    #[error("Tried to fetch page number out of bounds. {TABLE_MAX_PAGES}")]
+    OutOfBounds,
+    #[error("Tried to flush null page")]
+    NullFlush,
+}
+
+#[derive(Error, Debug)]
+pub enum TableError {
+    #[error(transparent)]
+    PagerError(#[from] PagerError),
+}
 
 pub type Page = [u8; PAGE_SIZE];
 

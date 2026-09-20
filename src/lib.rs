@@ -1,6 +1,8 @@
+pub mod cursor;
 pub mod errors;
 pub mod row;
 pub mod table;
+pub mod vm;
 
 pub mod constants {
     use crate::row::{Row, VarChar};
