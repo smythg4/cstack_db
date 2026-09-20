@@ -2,7 +2,10 @@ use crate::constants::*;
 use crate::cursor::Cursor;
 use crate::errors::*;
 use crate::row::{Row, VarChar};
-use crate::table::Table;
+use crate::table::{
+    COMMON_NODE_HEADER_SIZE, LEAF_NODE_CELL_SIZE, LEAF_NODE_HEADER_SIZE, LEAF_NODE_MAX_CELLS,
+    LEAF_NODE_SPACE_FOR_CELLS, Table,
+};
 use std::io::{BufReader, Write};
 use std::io::{Lines, Stdin};
 
@@ -25,11 +28,24 @@ pub fn read_input(lines: &mut Lines<BufReader<Stdin>>) -> Result<String, String>
 }
 
 pub fn do_meta_command(input: &str, table: &mut Table) -> Result<(), MetaCommandError> {
-    if input == ".exit" {
-        table.flush_all().expect("failed to flush on exit");
-        std::process::exit(0);
+    match input {
+        ".exit" => {
+            table.flush_all().expect("failed to flush on exit");
+            std::process::exit(0);
+        }
+        ".constants" => {
+            println!("Constants:");
+            print_constants();
+            Ok(())
+        }
+        ".btree" => {
+            println!("Tree:");
+            let node = table.get_node_mut(0).expect("failed to fetch root node");
+            print!("{node}");
+            Ok(())
+        }
+        _ => Err(MetaCommandError::Unrecognized(input.to_string())),
     }
-    Err(MetaCommandError::Unrecognized(input.to_string()))
 }
 
 pub fn prepare_statement(input: &str) -> Result<Statement, PrepareError> {
@@ -77,26 +93,26 @@ pub fn prepare_insert(input: &str) -> Result<Row, PrepareError> {
 }
 
 pub fn execute_insert(row: Row, table: &mut Table) -> Result<(), ExecuteError> {
-    if table.len() >= TABLE_MAX_ROWS {
-        return Err(ExecuteError::TableFull);
-    }
     let mut cursor = Cursor::table_end(table);
-    row.serialize_row(&mut cursor.cursor_value_mut()?)?;
-    table.incr_rows();
+    match cursor.leaf_node_insert(row.id, &row) {
+        Ok(_) => {}
+        // TODO: This will go away once page splitting is implemented
+        Err(crate::cursor::CursorError::LeafNodeFull) => return Err(ExecuteError::TableFull),
+        Err(e) => return Err(e.into()),
+    }
     Ok(())
 }
 
 pub fn execute_select(table: &mut Table) -> Result<(), ExecuteError> {
     let mut cursor = Cursor::table_start(table);
     while !cursor.at_end() {
-        let mut row_reader = match cursor.cursor_value() {
-            Ok(Some(rr)) => rr,
-            Ok(None) => return Err(ExecuteError::PageNotFound),
-            Err(e) => return Err(e.into()),
+        let mut row_reader = {
+            let rr = cursor.cursor_value_mut()?;
+            &*rr
         };
         let row = Row::deserialize_row(&mut row_reader)?;
         println!("{row}");
-        cursor.cursor_advance();
+        cursor.cursor_advance()?;
     }
     Ok(())
 }
@@ -106,4 +122,13 @@ pub fn execute_statement(statement: Statement, table: &mut Table) -> Result<(), 
         Statement::Insert(row) => execute_insert(*row, table),
         Statement::Select => execute_select(table),
     }
+}
+
+pub fn print_constants() {
+    println!("ROW_SIZE: {ROW_SIZE}");
+    println!("COMMON_NODE_HEADER_SIZE: {COMMON_NODE_HEADER_SIZE}");
+    println!("LEAF_NODE_HEADER_SIZE: {LEAF_NODE_HEADER_SIZE}");
+    println!("LEAF_NODE_CELL_SIZE: {LEAF_NODE_CELL_SIZE}");
+    println!("LEAF_NODE_SPACE_FOR_CELLS: {LEAF_NODE_SPACE_FOR_CELLS}");
+    println!("LEAF_NODE_MAX_CELLS: {LEAF_NODE_MAX_CELLS}");
 }

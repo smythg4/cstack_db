@@ -70,7 +70,7 @@ impl Row {
         Ok(())
     }
 
-    pub fn deserialize_row<R: Read>(r: &mut R) -> Result<Row, std::io::Error> {
+    pub fn deserialize_row<R: Read + ?Sized>(r: &mut R) -> Result<Row, std::io::Error> {
         let mut id_buf = [0u8; ID_SIZE];
         r.read_exact(&mut id_buf)?;
         let id: u32 = u32::from_be_bytes(id_buf);

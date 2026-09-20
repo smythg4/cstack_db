@@ -25,6 +25,4 @@ pub mod constants {
     // table struct constants
     pub const PAGE_SIZE: usize = 4096;
     pub const TABLE_MAX_PAGES: usize = 100;
-    pub const ROWS_PER_PAGE: usize = PAGE_SIZE / ROW_SIZE;
-    pub const TABLE_MAX_ROWS: usize = ROWS_PER_PAGE * TABLE_MAX_PAGES;
 }
