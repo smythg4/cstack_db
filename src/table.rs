@@ -1,7 +1,7 @@
 use crate::constants::*;
-use std::cell::{Ref, RefCell, RefMut, Cell};
+use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, Write, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use thiserror::Error;
@@ -24,7 +24,8 @@ pub enum TableError {
     PagerError(#[from] PagerError),
 }
 
-pub enum NodeType {
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum NodeKind {
     Leaf,
     Internal,
 }
@@ -58,6 +59,7 @@ pub struct Node<G> {
 
 impl<G: DerefMut<Target = [u8]>> Node<G> {
     pub fn initialize_leaf_node(&mut self) {
+        self.set_node_type(NodeKind::Leaf);
         self.set_leaf_node_num_cells(0)
     }
 
@@ -87,6 +89,13 @@ impl<G: DerefMut<Target = [u8]>> Node<G> {
         self.page
             .copy_within(from_base..from_base + LEAF_NODE_CELL_SIZE, to_base);
     }
+
+    pub fn set_node_type(&mut self, kind: NodeKind) {
+        self.page[NODE_TYPE_OFFSET] = match kind {
+            NodeKind::Internal => 0,
+            NodeKind::Leaf => 1,
+        };
+    }
 }
 
 impl<G: Deref<Target = [u8]>> std::fmt::Display for Node<G> {
@@ -112,6 +121,14 @@ impl<G: Deref<Target = [u8]>> Node<G> {
         let base = LEAF_NODE_HEADER_SIZE + cell_num * LEAF_NODE_CELL_SIZE;
         let bytes: [u8; 4] = self.page[base..base + 4].try_into().unwrap();
         u32::from_be_bytes(bytes)
+    }
+
+    pub fn get_node_type(&self) -> NodeKind {
+        match self.page[NODE_TYPE_OFFSET] {
+            0 => NodeKind::Internal,
+            1 => NodeKind::Leaf,
+            _ => unreachable!(),
+        }
     }
 }
 
@@ -180,8 +197,7 @@ impl Pager {
             let mut fd_guard = self.file_descriptor.borrow_mut();
 
             if page_num <= num_pages {
-                fd_guard
-                    .seek(std::io::SeekFrom::Start((page_num * PAGE_SIZE) as u64))?;
+                fd_guard.seek(std::io::SeekFrom::Start((page_num * PAGE_SIZE) as u64))?;
                 let _ = fd_guard.read(&mut page)?;
             }
 
@@ -220,8 +236,7 @@ impl Pager {
         match guard.as_deref() {
             Some(page) => {
                 let mut fd_guard = self.file_descriptor.borrow_mut();
-                fd_guard
-                    .seek(SeekFrom::Start((page_num * PAGE_SIZE) as u64))?;
+                fd_guard.seek(SeekFrom::Start((page_num * PAGE_SIZE) as u64))?;
                 fd_guard.write_all(page)?;
                 Ok(())
             }

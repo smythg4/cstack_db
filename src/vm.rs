@@ -93,11 +93,13 @@ pub fn prepare_insert(input: &str) -> Result<Row, PrepareError> {
 }
 
 pub fn execute_insert(row: Row, table: &Table) -> Result<(), ExecuteError> {
-    let cursor = Cursor::table_end(table);
+    let key_to_insert = row.id;
+    let cursor = Cursor::table_find(table, key_to_insert)?;
     match cursor.leaf_node_insert(row.id, &row) {
         Ok(_) => {}
         // TODO: This will go away once page splitting is implemented
         Err(CursorError::LeafNodeFull) => return Err(ExecuteError::TableFull),
+        Err(CursorError::DuplicateKey(_)) => return Err(ExecuteError::DuplicateKey),
         Err(e) => return Err(e.into()),
     }
     Ok(())

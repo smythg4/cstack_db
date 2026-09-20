@@ -1,6 +1,6 @@
 use crate::row::Row;
 use crate::table::TableError::PagerError;
-use crate::table::{LEAF_NODE_MAX_CELLS, Table, TableError};
+use crate::table::{LEAF_NODE_MAX_CELLS, NodeKind, Table, TableError};
 use std::cell::{Ref, RefMut};
 use thiserror::Error;
 
@@ -8,6 +8,10 @@ use thiserror::Error;
 pub enum CursorError {
     #[error(transparent)]
     TableError(#[from] TableError),
+    #[error("Duplicate key: {0}")]
+    DuplicateKey(u32),
+    #[error("Need to implement searching an internal node")]
+    InternalNodeSearch,
     #[error("Need to implement splitting a leaf node.")]
     LeafNodeFull,
 }
@@ -38,6 +42,15 @@ impl<'a> Cursor<'a> {
             page_num,
             cell_num,
             end_of_table: true,
+        }
+    }
+
+    pub fn table_find(table: &'a Table, key: u32) -> Result<Self, CursorError> {
+        let root_page_num = table.root_page_num();
+        let node_type = table.get_node_mut(root_page_num)?.get_node_type();
+        match node_type {
+            NodeKind::Leaf => Self::leaf_node_find(table, root_page_num, key),
+            NodeKind::Internal => Err(CursorError::InternalNodeSearch),
         }
     }
 
@@ -74,8 +87,12 @@ impl<'a> Cursor<'a> {
         }
 
         if self.cell_num < num_cells {
+            let key_at_index = node.leaf_node_key(self.cell_num);
+            if key_at_index == key {
+                return Err(CursorError::DuplicateKey(key));
+            }
             // make room for a new cell
-            for i in (self.cell_num..num_cells).rev() {
+            for i in (self.cell_num + 1..=num_cells).rev() {
                 node.copy_cell(i - 1, i);
             }
         }
@@ -85,5 +102,42 @@ impl<'a> Cursor<'a> {
         row.serialize_row(&mut node.leaf_node_value(self.cell_num))
             .map_err(|e| PagerError(e.into()))?;
         Ok(())
+    }
+
+    pub fn leaf_node_find(
+        table: &'a Table,
+        page_num: usize,
+        key: u32,
+    ) -> Result<Self, CursorError> {
+        let node = table.get_node_mut(page_num)?;
+        let num_cells = node.leaf_node_num_cells() as usize;
+
+        // Binary search
+        let mut min_index = 0;
+        let mut one_past_max_index = num_cells;
+        while one_past_max_index != min_index {
+            let index = (min_index + one_past_max_index) / 2;
+            let key_at_index = node.leaf_node_key(index);
+            if key == key_at_index {
+                return Ok(Self {
+                    table,
+                    page_num,
+                    cell_num: index,
+                    end_of_table: false,
+                });
+            }
+            if key < key_at_index {
+                one_past_max_index = index;
+            } else {
+                min_index = index + 1;
+            }
+        }
+
+        Ok(Self {
+            table,
+            page_num,
+            cell_num: min_index,
+            end_of_table: false,
+        })
     }
 }

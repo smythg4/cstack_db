@@ -24,6 +24,8 @@ pub enum PrepareError {
 pub enum ExecuteError {
     #[error("Error: Table full.")]
     TableFull,
+    #[error("Error: Duplicate key.")]
+    DuplicateKey,
     #[error("Error: Page Not Found")]
     PageNotFound,
     #[error("Error: Io Error")]
@@ -38,6 +40,7 @@ impl ExecuteError {
     pub fn is_fatal(&self) -> bool {
         match self {
             ExecuteError::TableFull => false,
+            ExecuteError::DuplicateKey => false,
             ExecuteError::PageNotFound => true,
             ExecuteError::IoError(_) => true,
             ExecuteError::TableError(_) => true,
