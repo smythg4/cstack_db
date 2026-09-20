@@ -29,4 +29,4 @@ to the follow-up DBMS project, not here.
 - [x] Part 6-7: cursor abstraction
 - [ ] Part 8-10: B-tree leaf nodes
 - [ ] Part 11-13: B-tree internal nodes, splitting
-- [ ] Part 14+: duplicate keys, scanning
+- [ ] Part 14: duplicate keys, scanning

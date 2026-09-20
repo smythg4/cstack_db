@@ -1,6 +1,8 @@
 use crate::constants::*;
+use std::cell::{Ref, RefCell, RefMut};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, Write};
+use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use thiserror::Error;
 
@@ -50,11 +52,11 @@ pub const LEAF_NODE_CELL_SIZE: usize = LEAF_NODE_KEY_SIZE + LEAF_NODE_VALUE_SIZE
 pub const LEAF_NODE_SPACE_FOR_CELLS: usize = PAGE_SIZE - LEAF_NODE_HEADER_SIZE;
 pub const LEAF_NODE_MAX_CELLS: usize = LEAF_NODE_SPACE_FOR_CELLS / LEAF_NODE_CELL_SIZE;
 
-pub struct Node<'a> {
-    page: &'a mut [u8],
+pub struct Node<G> {
+    page: G,
 }
 
-impl<'a> Node<'a> {
+impl<G: DerefMut<Target = [u8]>> Node<G> {
     pub fn initialize_leaf_node(&mut self) {
         self.set_leaf_node_num_cells(0)
     }
@@ -62,13 +64,6 @@ impl<'a> Node<'a> {
     pub fn set_leaf_node_num_cells(&mut self, n: u32) {
         self.page[LEAF_NODE_NUM_CELLS_OFFSET..LEAF_NODE_NUM_CELLS_OFFSET + 4]
             .copy_from_slice(&n.to_be_bytes());
-    }
-
-    pub fn leaf_node_num_cells(&self) -> u32 {
-        let bytes: [u8; 4] = self.page[LEAF_NODE_NUM_CELLS_OFFSET..LEAF_NODE_NUM_CELLS_OFFSET + 4]
-            .try_into()
-            .unwrap();
-        u32::from_be_bytes(bytes)
     }
 
     pub fn leaf_node_cell(&mut self, cell_num: usize) -> &mut [u8] {
@@ -79,12 +74,6 @@ impl<'a> Node<'a> {
     pub fn set_leaf_node_key(&mut self, cell_num: usize, key: u32) {
         let base = LEAF_NODE_HEADER_SIZE + cell_num * LEAF_NODE_CELL_SIZE;
         self.page[base..base + 4].copy_from_slice(&key.to_be_bytes());
-    }
-
-    pub fn leaf_node_key(&self, cell_num: usize) -> u32 {
-        let base = LEAF_NODE_HEADER_SIZE + cell_num * LEAF_NODE_CELL_SIZE;
-        let bytes: [u8; 4] = self.page[base..base + 4].try_into().unwrap();
-        u32::from_be_bytes(bytes)
     }
 
     pub fn leaf_node_value(&mut self, cell_num: usize) -> &mut [u8] {
@@ -100,7 +89,7 @@ impl<'a> Node<'a> {
     }
 }
 
-impl<'a> std::fmt::Display for Node<'a> {
+impl<G: Deref<Target = [u8]>> std::fmt::Display for Node<G> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let num_cells = self.leaf_node_num_cells() as usize;
         writeln!(f, "leaf (size {num_cells})")?;
@@ -112,13 +101,27 @@ impl<'a> std::fmt::Display for Node<'a> {
     }
 }
 
+impl<G: Deref<Target = [u8]>> Node<G> {
+    pub fn leaf_node_num_cells(&self) -> u32 {
+        let bytes: [u8; 4] = self.page[LEAF_NODE_NUM_CELLS_OFFSET..LEAF_NODE_NUM_CELLS_OFFSET + 4]
+            .try_into()
+            .unwrap();
+        u32::from_be_bytes(bytes)
+    }
+    pub fn leaf_node_key(&self, cell_num: usize) -> u32 {
+        let base = LEAF_NODE_HEADER_SIZE + cell_num * LEAF_NODE_CELL_SIZE;
+        let bytes: [u8; 4] = self.page[base..base + 4].try_into().unwrap();
+        u32::from_be_bytes(bytes)
+    }
+}
+
 pub type Page = [u8; PAGE_SIZE];
 
 pub struct Pager {
     file_descriptor: File,
     file_length: usize,
     num_pages: usize,
-    pages: [Option<Box<Page>>; TABLE_MAX_PAGES],
+    pages: [RefCell<Option<Box<Page>>>; TABLE_MAX_PAGES],
 }
 
 impl Pager {
@@ -135,7 +138,7 @@ impl Pager {
             return Err(PagerError::PartialPageSize);
         }
         let num_pages = file_length / PAGE_SIZE;
-        const EMPTY: Option<Box<Page>> = None;
+        const EMPTY: RefCell<Option<Box<Page>>> = RefCell::new(None);
         let pages = [EMPTY; TABLE_MAX_PAGES];
         Ok(Self {
             file_descriptor,
@@ -153,16 +156,20 @@ impl Pager {
         self.file_length == 0
     }
 
-    pub fn get_page(&mut self, page_num: usize) -> Result<Option<&[u8; PAGE_SIZE]>, PagerError> {
-        Ok(Some(&*self.get_page_mut(page_num)?))
+    pub fn get_page(&self, page_num: usize) -> Result<Option<Ref<'_, [u8]>>, PagerError> {
+        if !self.is_in_bounds(page_num) {
+            return Err(PagerError::OutOfBounds);
+        }
+        let guard = self.pages[page_num].borrow();
+        Ok(Ref::filter_map(guard, |opt| opt.as_deref().map(|p| &p[..])).ok())
     }
 
-    pub fn get_page_mut(&mut self, page_num: usize) -> Result<&mut [u8; PAGE_SIZE], PagerError> {
-        if self.is_in_bounds(page_num) {
+    pub fn get_page_mut(&mut self, page_num: usize) -> Result<RefMut<'_, [u8]>, PagerError> {
+        if !self.is_in_bounds(page_num) {
             return Err(PagerError::OutOfBounds);
         }
 
-        if self.pages[page_num].is_none() {
+        if self.pages[page_num].borrow().is_none() {
             let mut page = [0u8; PAGE_SIZE];
             let mut num_pages = self.file_length / PAGE_SIZE;
             if !self.file_length.is_multiple_of(PAGE_SIZE) {
@@ -175,42 +182,55 @@ impl Pager {
                 let _ = self.file_descriptor.read(&mut page)?;
             }
 
-            self.pages[page_num] = Some(Box::new(page));
+            *self.pages[page_num].borrow_mut() = Some(Box::new(page));
             if page_num >= self.num_pages {
                 self.num_pages = page_num + 1;
             }
         }
 
-        Ok(self.pages[page_num].as_deref_mut().unwrap())
+        let guard = self.pages[page_num].borrow_mut();
+        Ok(RefMut::map(
+            guard,
+            |opt| &mut opt.as_deref_mut().unwrap()[..],
+        ))
     }
 
-    pub fn get_node_mut(&mut self, page_num: usize) -> Result<Node<'_>, PagerError> {
+    pub fn get_node_mut(&mut self, page_num: usize) -> Result<Node<RefMut<'_, [u8]>>, PagerError> {
         Ok(Node {
             page: self.get_page_mut(page_num)?,
         })
     }
 
+    pub fn get_node(&self, page_num: usize) -> Result<Option<Node<Ref<'_, [u8]>>>, PagerError> {
+        let Some(page) = self.get_page(page_num)? else {
+            return Ok(None);
+        };
+        Ok(Some(Node { page }))
+    }
+
     fn pager_flush(&mut self, page_num: usize) -> Result<(), PagerError> {
-        if self.is_cached(page_num) {
-            match self.pages.get(page_num) {
-                Some(Some(page)) => {
-                    self.file_descriptor
-                        .seek(std::io::SeekFrom::Start((page_num * PAGE_SIZE) as u64))?;
-                    self.file_descriptor.write_all(&page[..PAGE_SIZE])?;
-                }
-                Some(None) => return Err(PagerError::NullFlush),
-                None => return Err(PagerError::OutOfBounds),
+        let guard = self
+            .pages
+            .get(page_num)
+            .ok_or(PagerError::OutOfBounds)?
+            .borrow();
+        match guard.as_deref() {
+            Some(page) => {
+                self.file_descriptor
+                    .seek(std::io::SeekFrom::Start((page_num * PAGE_SIZE) as u64))?;
+                self.file_descriptor.write_all(page)?;
+                Ok(())
             }
+            None => Err(PagerError::NullFlush),
         }
-        Ok(())
     }
 
     fn is_cached(&self, page_num: usize) -> bool {
-        self.pages[page_num].is_some()
+        self.pages[page_num].borrow().is_some()
     }
 
     fn is_in_bounds(&self, page_num: usize) -> bool {
-        page_num > TABLE_MAX_PAGES
+        page_num <= TABLE_MAX_PAGES
     }
 }
 
@@ -235,11 +255,11 @@ impl Table {
         })
     }
 
-    pub fn get_page(&mut self, page_num: usize) -> Result<Option<&[u8; PAGE_SIZE]>, TableError> {
+    pub fn get_page(&self, page_num: usize) -> Result<Option<Ref<'_, [u8]>>, TableError> {
         Ok(self.pager.get_page(page_num)?)
     }
 
-    pub fn get_page_mut(&mut self, page_num: usize) -> Result<&mut [u8; PAGE_SIZE], TableError> {
+    pub fn get_page_mut(&mut self, page_num: usize) -> Result<RefMut<'_, [u8]>, TableError> {
         Ok(self.pager.get_page_mut(page_num)?)
     }
 
@@ -257,7 +277,11 @@ impl Table {
             .leaf_node_num_cells() as usize
     }
 
-    pub fn get_node_mut(&mut self, page_num: usize) -> Result<Node<'_>, TableError> {
+    pub fn get_node(&mut self, page_num: usize) -> Result<Option<Node<Ref<'_, [u8]>>>, TableError> {
+        Ok(self.pager.get_node(page_num)?)
+    }
+
+    pub fn get_node_mut(&mut self, page_num: usize) -> Result<Node<RefMut<'_, [u8]>>, TableError> {
         Ok(self.pager.get_node_mut(page_num)?)
     }
 
@@ -269,10 +293,23 @@ impl Table {
         &mut self,
         page_num: usize,
         cell_num: usize,
-    ) -> Result<&mut [u8], TableError> {
+    ) -> Result<RefMut<'_, [u8]>, TableError> {
         let page = self.get_page_mut(page_num)?;
         let base = LEAF_NODE_HEADER_SIZE + cell_num * LEAF_NODE_CELL_SIZE + LEAF_NODE_KEY_SIZE;
-        Ok(&mut page[base..base + LEAF_NODE_VALUE_SIZE])
+        Ok(RefMut::map(page, |p| {
+            &mut p[base..base + LEAF_NODE_VALUE_SIZE]
+        }))
+    }
+
+    pub fn get_leaf_value(
+        &self,
+        page_num: usize,
+        cell_num: usize,
+    ) -> Result<Option<Ref<'_, [u8]>>, TableError> {
+        let page = self.get_page(page_num)?;
+        let base = LEAF_NODE_HEADER_SIZE + cell_num * LEAF_NODE_CELL_SIZE + LEAF_NODE_KEY_SIZE;
+        Ok(page
+            .map(|page_ref| Ref::map(page_ref, |bytes| &bytes[base..base + LEAF_NODE_VALUE_SIZE])))
     }
 
     pub fn flush_all(&mut self) -> Result<(), TableError> {

@@ -1,6 +1,7 @@
 use crate::row::Row;
 use crate::table::TableError::PagerError;
 use crate::table::{LEAF_NODE_MAX_CELLS, Table, TableError};
+use std::cell::{Ref, RefMut};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -40,7 +41,11 @@ impl<'a> Cursor<'a> {
         }
     }
 
-    pub fn cursor_value_mut(&mut self) -> Result<&mut [u8], CursorError> {
+    pub fn cursor_value(&mut self) -> Result<Option<Ref<'_, [u8]>>, CursorError> {
+        Ok(self.table.get_leaf_value(self.page_num, self.cell_num)?)
+    }
+
+    pub fn cursor_value_mut(&mut self) -> Result<RefMut<'_, [u8]>, CursorError> {
         Ok(self
             .table
             .get_leaf_value_mut(self.page_num, self.cell_num)?)

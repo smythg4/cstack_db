@@ -1,5 +1,5 @@
 use crate::constants::*;
-use crate::cursor::Cursor;
+use crate::cursor::{Cursor, CursorError};
 use crate::errors::*;
 use crate::row::{Row, VarChar};
 use crate::table::{
@@ -97,7 +97,7 @@ pub fn execute_insert(row: Row, table: &mut Table) -> Result<(), ExecuteError> {
     match cursor.leaf_node_insert(row.id, &row) {
         Ok(_) => {}
         // TODO: This will go away once page splitting is implemented
-        Err(crate::cursor::CursorError::LeafNodeFull) => return Err(ExecuteError::TableFull),
+        Err(CursorError::LeafNodeFull) => return Err(ExecuteError::TableFull),
         Err(e) => return Err(e.into()),
     }
     Ok(())
@@ -106,12 +106,16 @@ pub fn execute_insert(row: Row, table: &mut Table) -> Result<(), ExecuteError> {
 pub fn execute_select(table: &mut Table) -> Result<(), ExecuteError> {
     let mut cursor = Cursor::table_start(table);
     while !cursor.at_end() {
-        let mut row_reader = {
-            let rr = cursor.cursor_value_mut()?;
-            &*rr
+        let row_reader = {
+            if let Some(rr) = cursor.cursor_value()? {
+                rr
+            } else {
+                continue;
+            }
         };
-        let row = Row::deserialize_row(&mut row_reader)?;
+        let row = Row::deserialize_row(&mut &*row_reader)?;
         println!("{row}");
+        drop(row_reader);
         cursor.cursor_advance()?;
     }
     Ok(())
