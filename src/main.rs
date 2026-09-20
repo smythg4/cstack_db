@@ -9,7 +9,7 @@ fn main() {
         std::process::exit(1);
     }
 
-    let mut table = match Table::db_open(args.remove(0)) {
+    let table = match Table::db_open(args.remove(0)) {
         Ok(t) => t,
         Err(e) => {
             println!("{e}");
@@ -29,7 +29,7 @@ fn main() {
         };
 
         if input.starts_with('.') {
-            match do_meta_command(&input, &mut table) {
+            match do_meta_command(&input, &table) {
                 Ok(_) => continue,
                 Err(e) => {
                     println!("{e}");
@@ -46,7 +46,7 @@ fn main() {
             }
         };
 
-        match execute_statement(statement, &mut table) {
+        match execute_statement(statement, &table) {
             Ok(_) => println!("Executed."),
             Err(e) => {
                 println!("{e}");

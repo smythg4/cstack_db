@@ -27,7 +27,7 @@ pub fn read_input(lines: &mut Lines<BufReader<Stdin>>) -> Result<String, String>
     }
 }
 
-pub fn do_meta_command(input: &str, table: &mut Table) -> Result<(), MetaCommandError> {
+pub fn do_meta_command(input: &str, table: &Table) -> Result<(), MetaCommandError> {
     match input {
         ".exit" => {
             table.flush_all().expect("failed to flush on exit");
@@ -92,8 +92,8 @@ pub fn prepare_insert(input: &str) -> Result<Row, PrepareError> {
     Ok(Row::new(id, username, email))
 }
 
-pub fn execute_insert(row: Row, table: &mut Table) -> Result<(), ExecuteError> {
-    let mut cursor = Cursor::table_end(table);
+pub fn execute_insert(row: Row, table: &Table) -> Result<(), ExecuteError> {
+    let cursor = Cursor::table_end(table);
     match cursor.leaf_node_insert(row.id, &row) {
         Ok(_) => {}
         // TODO: This will go away once page splitting is implemented
@@ -103,7 +103,7 @@ pub fn execute_insert(row: Row, table: &mut Table) -> Result<(), ExecuteError> {
     Ok(())
 }
 
-pub fn execute_select(table: &mut Table) -> Result<(), ExecuteError> {
+pub fn execute_select(table: &Table) -> Result<(), ExecuteError> {
     let mut cursor = Cursor::table_start(table);
     while !cursor.at_end() {
         let row_reader = {
@@ -121,7 +121,7 @@ pub fn execute_select(table: &mut Table) -> Result<(), ExecuteError> {
     Ok(())
 }
 
-pub fn execute_statement(statement: Statement, table: &mut Table) -> Result<(), ExecuteError> {
+pub fn execute_statement(statement: Statement, table: &Table) -> Result<(), ExecuteError> {
     match statement {
         Statement::Insert(row) => execute_insert(*row, table),
         Statement::Select => execute_select(table),

@@ -12,14 +12,14 @@ pub enum CursorError {
     LeafNodeFull,
 }
 pub struct Cursor<'a> {
-    table: &'a mut Table,
+    table: &'a Table,
     page_num: usize,
     cell_num: usize,
     end_of_table: bool,
 }
 
 impl<'a> Cursor<'a> {
-    pub fn table_start(table: &'a mut Table) -> Self {
+    pub fn table_start(table: &'a Table) -> Self {
         let end_of_table = table.is_empty();
         let page_num = table.root_page_num();
         Self {
@@ -30,7 +30,7 @@ impl<'a> Cursor<'a> {
         }
     }
 
-    pub fn table_end(table: &'a mut Table) -> Self {
+    pub fn table_end(table: &'a Table) -> Self {
         let page_num = table.root_page_num();
         let cell_num = table.root_node_num_cells();
         Self {
@@ -41,11 +41,11 @@ impl<'a> Cursor<'a> {
         }
     }
 
-    pub fn cursor_value(&mut self) -> Result<Option<Ref<'_, [u8]>>, CursorError> {
+    pub fn cursor_value(&self) -> Result<Option<Ref<'_, [u8]>>, CursorError> {
         Ok(self.table.get_leaf_value(self.page_num, self.cell_num)?)
     }
 
-    pub fn cursor_value_mut(&mut self) -> Result<RefMut<'_, [u8]>, CursorError> {
+    pub fn cursor_value_mut(&self) -> Result<RefMut<'_, [u8]>, CursorError> {
         Ok(self
             .table
             .get_leaf_value_mut(self.page_num, self.cell_num)?)
@@ -65,7 +65,7 @@ impl<'a> Cursor<'a> {
         self.end_of_table
     }
 
-    pub fn leaf_node_insert(&mut self, key: u32, row: &Row) -> Result<(), CursorError> {
+    pub fn leaf_node_insert(&self, key: u32, row: &Row) -> Result<(), CursorError> {
         let mut node = self.table.get_node_mut(self.page_num)?;
         let num_cells = node.leaf_node_num_cells() as usize;
         if num_cells >= LEAF_NODE_MAX_CELLS {
