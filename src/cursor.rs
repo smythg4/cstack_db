@@ -18,6 +18,8 @@ pub enum CursorError {
     LeafNodeFull,
     #[error("Need to implement updating parent after split")]
     ParentUpdate,
+    #[error("Node not found {0}")]
+    NodeNotFound(usize),
 }
 pub struct Cursor<'a> {
     table: &'a Table,
@@ -43,7 +45,7 @@ impl<'a> Cursor<'a> {
         let node_type = table.get_node_mut(root_page_num)?.get_node_type();
         match node_type {
             NodeKind::Leaf => Self::leaf_node_find(table, root_page_num, key),
-            NodeKind::Internal => Err(CursorError::InternalNodeSearch),
+            NodeKind::Internal => Self::internal_node_find(table, root_page_num, key),
         }
     }
 
@@ -136,6 +138,42 @@ impl<'a> Cursor<'a> {
         })
     }
 
+    pub fn internal_node_find(
+        table: &'a Table,
+        page_num: usize,
+        key: u32,
+    ) -> Result<Self, CursorError> {
+        let child_num = {
+            let node = match table.get_node(page_num)? {
+                Some(n) => n,
+                None => return Err(CursorError::NodeNotFound(page_num)),
+            };
+            let num_keys = node.get_internal_node_num_keys() as usize;
+
+            let mut min_index = 0;
+            let mut max_index = num_keys;
+            while max_index != min_index {
+                let index = (min_index + max_index) / 2;
+                if node.get_internal_node_key(index) >= key {
+                    max_index = index;
+                } else {
+                    min_index = index + 1;
+                }
+            }
+            node.get_internal_node_child(min_index) as usize
+        }; // node's guard drops here
+
+        let child_type = match table.get_node(child_num)? {
+            Some(cn) => cn.get_node_type(),
+            None => return Err(CursorError::NodeNotFound(child_num)),
+        }; // the temporary Ref drops here too — never bound to a name
+
+        match child_type {
+            NodeKind::Internal => Self::internal_node_find(table, child_num, key),
+            NodeKind::Leaf => Self::leaf_node_find(table, child_num, key),
+        }
+    }
+
     pub fn leaf_node_split_and_insert(&self, key: u32, row: &Row) -> Result<(), CursorError> {
         let mut old_node = self.table.get_node_mut(self.page_num)?;
         let new_page_num = self.table.get_unused_page_num();
@@ -152,6 +190,7 @@ impl<'a> Cursor<'a> {
                 } else {
                     old_node.leaf_node_cell(index_within_node)
                 };
+                // TODO: will I need this? dest_node.set_leaf_node_key(index_within_node, key);
                 row.serialize_row(&mut dest)
                     .map_err(|e| TableError::PagerError(PagerError::IoError(e)))?;
             } else {
