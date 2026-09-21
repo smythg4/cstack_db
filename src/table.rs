@@ -42,7 +42,10 @@ pub const COMMON_NODE_HEADER_SIZE: usize = NODE_TYPE_SIZE + IS_ROOT_SIZE + PAREN
 // Leaf node header layout
 pub const LEAF_NODE_NUM_CELLS_SIZE: usize = size_of::<u32>();
 pub const LEAF_NODE_NUM_CELLS_OFFSET: usize = COMMON_NODE_HEADER_SIZE;
-pub const LEAF_NODE_HEADER_SIZE: usize = COMMON_NODE_HEADER_SIZE + LEAF_NODE_NUM_CELLS_SIZE;
+pub const LEAF_NODE_NEXT_LEAF_SIZE: usize = size_of::<u32>();
+pub const LEAF_NODE_NEXT_LEAF_OFFSET: usize = LEAF_NODE_NUM_CELLS_OFFSET + LEAF_NODE_NUM_CELLS_SIZE;
+pub const LEAF_NODE_HEADER_SIZE: usize =
+    COMMON_NODE_HEADER_SIZE + LEAF_NODE_NUM_CELLS_SIZE + LEAF_NODE_NUM_CELLS_SIZE;
 
 // Leaf node body layout
 pub const LEAF_NODE_KEY_SIZE: usize = size_of::<u32>();
@@ -80,7 +83,8 @@ impl<G: DerefMut<Target = [u8]>> Node<G> {
     pub fn initialize_leaf_node(&mut self) {
         self.set_node_type(NodeKind::Leaf);
         self.set_root_node(false);
-        self.set_leaf_node_num_cells(0)
+        self.set_leaf_node_num_cells(0);
+        self.set_leaf_node_next_leaf(0);
     }
 
     pub fn initialize_internal_node(&mut self) {
@@ -175,6 +179,13 @@ impl<G: DerefMut<Target = [u8]>> Node<G> {
             self.internal_node_cell(child_num)[..INTERNAL_NODE_CHILD_SIZE]
                 .copy_from_slice(&(page_num as u32).to_be_bytes());
         }
+    }
+
+    pub fn set_leaf_node_next_leaf(&mut self, next_leaf: u32) {
+        assert!(self.get_node_type() == NodeKind::Leaf);
+        self.page
+            [LEAF_NODE_NEXT_LEAF_OFFSET..LEAF_NODE_NEXT_LEAF_OFFSET + LEAF_NODE_NEXT_LEAF_SIZE]
+            .copy_from_slice(&next_leaf.to_be_bytes());
     }
 
     pub fn internal_node_cell(&mut self, cell_num: usize) -> &mut [u8] {
@@ -298,6 +309,15 @@ impl<G: Deref<Target = [u8]>> Node<G> {
             1 => true,
             _ => unreachable!(),
         }
+    }
+
+    pub fn get_leaf_node_next_leaf(&self) -> u32 {
+        assert!(self.get_node_type() == NodeKind::Leaf);
+        let bytes: [u8; 4] = self.page
+            [LEAF_NODE_NEXT_LEAF_OFFSET..LEAF_NODE_NEXT_LEAF_OFFSET + LEAF_NODE_NEXT_LEAF_SIZE]
+            .try_into()
+            .unwrap();
+        u32::from_be_bytes(bytes)
     }
 }
 

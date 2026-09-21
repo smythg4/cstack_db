@@ -29,15 +29,16 @@ pub struct Cursor<'a> {
 }
 
 impl<'a> Cursor<'a> {
-    pub fn table_start(table: &'a Table) -> Self {
-        let end_of_table = table.is_empty();
-        let page_num = table.root_page_num();
-        Self {
-            table,
-            page_num,
-            cell_num: 0,
-            end_of_table,
-        }
+    pub fn table_start(table: &'a Table) -> Result<Self, CursorError> {
+        let root_page_num = table.root_page_num();
+        let mut cursor = Self::table_find(table, root_page_num as u32)?;
+
+        let node = table.get_node_mut(cursor.page_num)?;
+
+        let num_cells = node.leaf_node_num_cells();
+        cursor.end_of_table = num_cells == 0;
+
+        Ok(cursor)
     }
 
     pub fn table_find(table: &'a Table, key: u32) -> Result<Self, CursorError> {
@@ -64,7 +65,13 @@ impl<'a> Cursor<'a> {
         self.cell_num += 1;
         let num_cells = node.leaf_node_num_cells() as usize;
         if self.cell_num >= num_cells {
-            self.end_of_table = true;
+            let next_page_num = node.get_leaf_node_next_leaf();
+            if next_page_num == 0 {
+                self.end_of_table = true;
+            } else {
+                self.page_num = next_page_num as usize;
+                self.cell_num = 0;
+            }
         }
         Ok(())
     }
@@ -163,10 +170,7 @@ impl<'a> Cursor<'a> {
             node.get_internal_node_child(min_index) as usize
         }; // node's guard drops here
 
-        let child_type = match table.get_node(child_num)? {
-            Some(cn) => cn.get_node_type(),
-            None => return Err(CursorError::NodeNotFound(child_num)),
-        }; // the temporary Ref drops here too — never bound to a name
+        let child_type = table.get_node_mut(child_num)?.get_node_type();
 
         match child_type {
             NodeKind::Internal => Self::internal_node_find(table, child_num, key),
@@ -176,22 +180,27 @@ impl<'a> Cursor<'a> {
 
     pub fn leaf_node_split_and_insert(&self, key: u32, row: &Row) -> Result<(), CursorError> {
         let mut old_node = self.table.get_node_mut(self.page_num)?;
+        let old_next = old_node.get_leaf_node_next_leaf();
+
         let new_page_num = self.table.get_unused_page_num();
+        old_node.set_leaf_node_next_leaf(new_page_num as u32);
+
         let mut new_node = self.table.get_node_mut(new_page_num)?;
         new_node.initialize_leaf_node();
+        new_node.set_leaf_node_next_leaf(old_next);
 
         for i in (0..=LEAF_NODE_MAX_CELLS).rev() {
             let index_within_node = i % LEAF_NODE_LEFT_SPLIT_COUNT;
             let dest_is_new = i >= LEAF_NODE_LEFT_SPLIT_COUNT;
 
             if i == self.cell_num {
-                let mut dest = if dest_is_new {
-                    new_node.leaf_node_cell(index_within_node)
+                let dest_node = if dest_is_new {
+                    &mut new_node
                 } else {
-                    old_node.leaf_node_cell(index_within_node)
+                    &mut old_node
                 };
-                // TODO: will I need this? dest_node.set_leaf_node_key(index_within_node, key);
-                row.serialize_row(&mut dest)
+                dest_node.set_leaf_node_key(index_within_node, key);
+                row.serialize_row(&mut dest_node.leaf_node_value(index_within_node))
                     .map_err(|e| TableError::PagerError(PagerError::IoError(e)))?;
             } else {
                 let src_index = if i > self.cell_num { i - 1 } else { i };

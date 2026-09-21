@@ -103,15 +103,9 @@ pub fn execute_insert(row: Row, table: &Table) -> Result<(), ExecuteError> {
 }
 
 pub fn execute_select(table: &Table) -> Result<(), ExecuteError> {
-    let mut cursor = Cursor::table_start(table);
+    let mut cursor = Cursor::table_start(table)?;
     while !cursor.at_end() {
-        let row_reader = {
-            if let Some(rr) = cursor.cursor_value()? {
-                rr
-            } else {
-                continue;
-            }
-        };
+        let row_reader = cursor.cursor_value_mut()?;
         let row = Row::deserialize_row(&mut &*row_reader)?;
         println!("{row}");
         drop(row_reader);
