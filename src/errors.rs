@@ -6,6 +6,8 @@ use thiserror::Error;
 pub enum MetaCommandError {
     #[error("Unrecognized command '{0}'.")]
     Unrecognized(String),
+    #[error(transparent)]
+    TableError(#[from] TableError),
 }
 
 #[derive(Error, Debug)]

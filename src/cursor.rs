@@ -1,6 +1,8 @@
 use crate::row::Row;
-use crate::table::TableError::PagerError;
-use crate::table::{LEAF_NODE_MAX_CELLS, NodeKind, Table, TableError};
+use crate::table::{
+    LEAF_NODE_LEFT_SPLIT_COUNT, LEAF_NODE_MAX_CELLS, LEAF_NODE_RIGHT_SPLIT_COUNT, NodeKind, Table,
+};
+use crate::table::{PagerError, TableError};
 use std::cell::{Ref, RefMut};
 use thiserror::Error;
 
@@ -14,6 +16,8 @@ pub enum CursorError {
     InternalNodeSearch,
     #[error("Need to implement splitting a leaf node.")]
     LeafNodeFull,
+    #[error("Need to implement updating parent after split")]
+    ParentUpdate,
 }
 pub struct Cursor<'a> {
     table: &'a Table,
@@ -31,17 +35,6 @@ impl<'a> Cursor<'a> {
             page_num,
             cell_num: 0,
             end_of_table,
-        }
-    }
-
-    pub fn table_end(table: &'a Table) -> Self {
-        let page_num = table.root_page_num();
-        let cell_num = table.root_node_num_cells();
-        Self {
-            table,
-            page_num,
-            cell_num,
-            end_of_table: true,
         }
     }
 
@@ -79,15 +72,17 @@ impl<'a> Cursor<'a> {
     }
 
     pub fn leaf_node_insert(&self, key: u32, row: &Row) -> Result<(), CursorError> {
-        let mut node = self.table.get_node_mut(self.page_num)?;
-        let num_cells = node.leaf_node_num_cells() as usize;
+        let num_cells = self
+            .table
+            .get_node_mut(self.page_num)?
+            .leaf_node_num_cells() as usize;
         if num_cells >= LEAF_NODE_MAX_CELLS {
-            // TODO: implement splitting, then this error goes away
-            return Err(CursorError::LeafNodeFull);
+            return self.leaf_node_split_and_insert(key, row);
         }
 
+        let mut node = self.table.get_node_mut(self.page_num)?;
         if self.cell_num < num_cells {
-            let key_at_index = node.leaf_node_key(self.cell_num);
+            let key_at_index = node.get_leaf_node_key(self.cell_num);
             if key_at_index == key {
                 return Err(CursorError::DuplicateKey(key));
             }
@@ -100,7 +95,7 @@ impl<'a> Cursor<'a> {
         node.set_leaf_node_num_cells(node.leaf_node_num_cells() + 1);
         node.set_leaf_node_key(self.cell_num, key);
         row.serialize_row(&mut node.leaf_node_value(self.cell_num))
-            .map_err(|e| PagerError(e.into()))?;
+            .map_err(|e| TableError::PagerError(e.into()))?;
         Ok(())
     }
 
@@ -117,7 +112,7 @@ impl<'a> Cursor<'a> {
         let mut one_past_max_index = num_cells;
         while one_past_max_index != min_index {
             let index = (min_index + one_past_max_index) / 2;
-            let key_at_index = node.leaf_node_key(index);
+            let key_at_index = node.get_leaf_node_key(index);
             if key == key_at_index {
                 return Ok(Self {
                     table,
@@ -139,5 +134,51 @@ impl<'a> Cursor<'a> {
             cell_num: min_index,
             end_of_table: false,
         })
+    }
+
+    pub fn leaf_node_split_and_insert(&self, key: u32, row: &Row) -> Result<(), CursorError> {
+        let mut old_node = self.table.get_node_mut(self.page_num)?;
+        let new_page_num = self.table.get_unused_page_num();
+        let mut new_node = self.table.get_node_mut(new_page_num)?;
+        new_node.initialize_leaf_node();
+
+        for i in (0..=LEAF_NODE_MAX_CELLS).rev() {
+            let index_within_node = i % LEAF_NODE_LEFT_SPLIT_COUNT;
+            let dest_is_new = i >= LEAF_NODE_LEFT_SPLIT_COUNT;
+
+            if i == self.cell_num {
+                let mut dest = if dest_is_new {
+                    new_node.leaf_node_cell(index_within_node)
+                } else {
+                    old_node.leaf_node_cell(index_within_node)
+                };
+                row.serialize_row(&mut dest)
+                    .map_err(|e| TableError::PagerError(PagerError::IoError(e)))?;
+            } else {
+                let src_index = if i > self.cell_num { i - 1 } else { i };
+                if dest_is_new {
+                    new_node.copy_cell_from(index_within_node, &old_node, src_index);
+                } else {
+                    old_node.copy_cell(src_index, index_within_node);
+                }
+            }
+        }
+        old_node.set_leaf_node_num_cells(LEAF_NODE_LEFT_SPLIT_COUNT as u32);
+        new_node.set_leaf_node_num_cells(LEAF_NODE_RIGHT_SPLIT_COUNT as u32);
+
+        let is_root = self.is_node_root();
+        drop(old_node);
+        drop(new_node);
+
+        if is_root {
+            self.table.create_new_root(new_page_num)?;
+            Ok(())
+        } else {
+            Err(CursorError::ParentUpdate)
+        }
+    }
+
+    pub fn is_node_root(&self) -> bool {
+        self.page_num == self.table.root_page_num()
     }
 }

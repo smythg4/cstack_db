@@ -40,8 +40,7 @@ pub fn do_meta_command(input: &str, table: &Table) -> Result<(), MetaCommandErro
         }
         ".btree" => {
             println!("Tree:");
-            let node = table.get_node_mut(0).expect("failed to fetch root node");
-            print!("{node}");
+            table.print_tree(table.root_page_num(), 0)?;
             Ok(())
         }
         _ => Err(MetaCommandError::Unrecognized(input.to_string())),
@@ -97,8 +96,6 @@ pub fn execute_insert(row: Row, table: &Table) -> Result<(), ExecuteError> {
     let cursor = Cursor::table_find(table, key_to_insert)?;
     match cursor.leaf_node_insert(row.id, &row) {
         Ok(_) => {}
-        // TODO: This will go away once page splitting is implemented
-        Err(CursorError::LeafNodeFull) => return Err(ExecuteError::TableFull),
         Err(CursorError::DuplicateKey(_)) => return Err(ExecuteError::DuplicateKey),
         Err(e) => return Err(e.into()),
     }

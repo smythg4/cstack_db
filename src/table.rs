@@ -44,7 +44,7 @@ pub const LEAF_NODE_NUM_CELLS_SIZE: usize = size_of::<u32>();
 pub const LEAF_NODE_NUM_CELLS_OFFSET: usize = COMMON_NODE_HEADER_SIZE;
 pub const LEAF_NODE_HEADER_SIZE: usize = COMMON_NODE_HEADER_SIZE + LEAF_NODE_NUM_CELLS_SIZE;
 
-// Left node body layout
+// Leaf node body layout
 pub const LEAF_NODE_KEY_SIZE: usize = size_of::<u32>();
 pub const LEAF_NODE_KEY_OFFSET: usize = 0;
 pub const LEAF_NODE_VALUE_SIZE: usize = ROW_SIZE;
@@ -53,6 +53,25 @@ pub const LEAF_NODE_CELL_SIZE: usize = LEAF_NODE_KEY_SIZE + LEAF_NODE_VALUE_SIZE
 pub const LEAF_NODE_SPACE_FOR_CELLS: usize = PAGE_SIZE - LEAF_NODE_HEADER_SIZE;
 pub const LEAF_NODE_MAX_CELLS: usize = LEAF_NODE_SPACE_FOR_CELLS / LEAF_NODE_CELL_SIZE;
 
+// Leaf node split parameters
+pub const LEAF_NODE_RIGHT_SPLIT_COUNT: usize = LEAF_NODE_MAX_CELLS.div_ceil(2);
+pub const LEAF_NODE_LEFT_SPLIT_COUNT: usize =
+    (LEAF_NODE_MAX_CELLS + 1) - LEAF_NODE_RIGHT_SPLIT_COUNT;
+
+// Internal Node header layout
+pub const INTERNAL_NODE_NUM_KEY_SIZE: usize = size_of::<u32>();
+pub const INTERNAL_NODE_NUM_KEYS_OFFSET: usize = COMMON_NODE_HEADER_SIZE;
+pub const INTERNAL_NODE_RIGHT_CHILD_SIZE: usize = size_of::<u32>();
+pub const INTERNAL_NODE_RIGHT_CHILD_OFFSET: usize =
+    INTERNAL_NODE_NUM_KEYS_OFFSET + INTERNAL_NODE_NUM_KEY_SIZE;
+pub const INTERNAL_NODE_HEADER_SIZE: usize =
+    COMMON_NODE_HEADER_SIZE + INTERNAL_NODE_NUM_KEY_SIZE + INTERNAL_NODE_RIGHT_CHILD_SIZE;
+
+// Internal Node body layout
+pub const INTERNAL_NODE_KEY_SIZE: usize = size_of::<u32>();
+pub const INTERNAL_NODE_CHILD_SIZE: usize = size_of::<u32>();
+pub const INTERNAL_NODE_CELL_SIZE: usize = INTERNAL_NODE_CHILD_SIZE + INTERNAL_NODE_KEY_SIZE;
+
 pub struct Node<G> {
     page: G,
 }
@@ -60,25 +79,42 @@ pub struct Node<G> {
 impl<G: DerefMut<Target = [u8]>> Node<G> {
     pub fn initialize_leaf_node(&mut self) {
         self.set_node_type(NodeKind::Leaf);
+        self.set_root_node(false);
         self.set_leaf_node_num_cells(0)
     }
 
+    pub fn initialize_internal_node(&mut self) {
+        self.set_node_type(NodeKind::Internal);
+        self.set_root_node(false);
+        self.set_internal_node_num_cells(0)
+    }
+
     pub fn set_leaf_node_num_cells(&mut self, n: u32) {
+        assert!(self.get_node_type() == NodeKind::Leaf);
         self.page[LEAF_NODE_NUM_CELLS_OFFSET..LEAF_NODE_NUM_CELLS_OFFSET + 4]
             .copy_from_slice(&n.to_be_bytes());
     }
 
+    pub fn set_internal_node_num_cells(&mut self, n: u32) {
+        assert!(self.get_node_type() == NodeKind::Internal);
+        self.page[INTERNAL_NODE_NUM_KEYS_OFFSET..INTERNAL_NODE_NUM_KEYS_OFFSET + 4]
+            .copy_from_slice(&n.to_be_bytes());
+    }
+
     pub fn leaf_node_cell(&mut self, cell_num: usize) -> &mut [u8] {
+        assert!(self.get_node_type() == NodeKind::Leaf);
         let base = LEAF_NODE_HEADER_SIZE + cell_num * LEAF_NODE_CELL_SIZE;
         &mut self.page[base..base + LEAF_NODE_CELL_SIZE]
     }
 
     pub fn set_leaf_node_key(&mut self, cell_num: usize, key: u32) {
+        assert!(self.get_node_type() == NodeKind::Leaf);
         let base = LEAF_NODE_HEADER_SIZE + cell_num * LEAF_NODE_CELL_SIZE;
         self.page[base..base + 4].copy_from_slice(&key.to_be_bytes());
     }
 
     pub fn leaf_node_value(&mut self, cell_num: usize) -> &mut [u8] {
+        assert!(self.get_node_type() == NodeKind::Leaf);
         let cell = self.leaf_node_cell(cell_num);
         &mut cell[LEAF_NODE_KEY_SIZE..]
     }
@@ -90,34 +126,101 @@ impl<G: DerefMut<Target = [u8]>> Node<G> {
             .copy_within(from_base..from_base + LEAF_NODE_CELL_SIZE, to_base);
     }
 
+    pub fn copy_cell_from<G2: Deref<Target = [u8]>>(
+        &mut self,
+        to_cell: usize,
+        source: &Node<G2>,
+        from_cell: usize,
+    ) {
+        let to_base = LEAF_NODE_HEADER_SIZE + to_cell * LEAF_NODE_CELL_SIZE;
+        let from_base = LEAF_NODE_HEADER_SIZE + from_cell * LEAF_NODE_CELL_SIZE;
+        self.page[to_base..to_base + LEAF_NODE_CELL_SIZE]
+            .copy_from_slice(&source.page[from_base..from_base + LEAF_NODE_CELL_SIZE]);
+    }
+
     pub fn set_node_type(&mut self, kind: NodeKind) {
         self.page[NODE_TYPE_OFFSET] = match kind {
             NodeKind::Internal => 0,
             NodeKind::Leaf => 1,
         };
     }
-}
 
-impl<G: Deref<Target = [u8]>> std::fmt::Display for Node<G> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let num_cells = self.leaf_node_num_cells() as usize;
-        writeln!(f, "leaf (size {num_cells})")?;
-        for i in 0..num_cells {
-            let key = self.leaf_node_key(i);
-            writeln!(f, "  - {i} : {key}")?;
+    pub fn set_internal_node_num_keys(&mut self, num_keys: usize) {
+        assert!(self.get_node_type() == NodeKind::Internal);
+        self.page[INTERNAL_NODE_NUM_KEYS_OFFSET
+            ..INTERNAL_NODE_NUM_KEYS_OFFSET + INTERNAL_NODE_NUM_KEY_SIZE]
+            .copy_from_slice(&(num_keys as u32).to_be_bytes());
+    }
+
+    pub fn set_internal_node_right_child(&mut self, right_child_index: usize) {
+        assert!(self.get_node_type() == NodeKind::Internal);
+        self.page[INTERNAL_NODE_RIGHT_CHILD_OFFSET
+            ..INTERNAL_NODE_RIGHT_CHILD_OFFSET + INTERNAL_NODE_RIGHT_CHILD_SIZE]
+            .copy_from_slice(&(right_child_index as u32).to_be_bytes());
+    }
+
+    pub fn set_internal_node_key(&mut self, key_num: usize, key: u32) {
+        assert!(self.get_node_type() == NodeKind::Internal);
+        let cell = self.internal_node_cell(key_num);
+        cell[INTERNAL_NODE_CHILD_SIZE..INTERNAL_NODE_CHILD_SIZE + INTERNAL_NODE_KEY_SIZE]
+            .copy_from_slice(&key.to_be_bytes());
+    }
+
+    pub fn set_internal_node_child(&mut self, child_num: usize, page_num: usize) {
+        assert!(self.get_node_type() == NodeKind::Internal);
+        let num_keys = self.get_internal_node_num_keys() as usize;
+        if child_num == num_keys {
+            self.set_internal_node_right_child(page_num);
+        } else {
+            self.internal_node_cell(child_num)[..INTERNAL_NODE_CHILD_SIZE]
+                .copy_from_slice(&(page_num as u32).to_be_bytes());
         }
-        Ok(())
+    }
+
+    pub fn internal_node_cell(&mut self, cell_num: usize) -> &mut [u8] {
+        assert!(self.get_node_type() == NodeKind::Internal);
+        let base = INTERNAL_NODE_HEADER_SIZE + cell_num * INTERNAL_NODE_CELL_SIZE;
+        &mut self.page[base..base + INTERNAL_NODE_CELL_SIZE]
+    }
+
+    pub fn internal_node_child(&mut self, child_num: usize) -> &mut [u8] {
+        assert!(self.get_node_type() == NodeKind::Internal);
+        let num_keys = self.get_internal_node_num_keys() as usize;
+        if child_num > num_keys {
+            println!("Tried to access child_num {child_num} > num_keys {num_keys}");
+            std::process::exit(1);
+        } else if child_num == num_keys {
+            self.internal_node_right_child()
+        } else {
+            self.internal_node_cell(child_num)
+        }
+    }
+
+    pub fn internal_node_right_child(&mut self) -> &mut [u8] {
+        assert!(self.get_node_type() == NodeKind::Internal);
+        let base = INTERNAL_NODE_HEADER_SIZE + INTERNAL_NODE_RIGHT_CHILD_OFFSET;
+        &mut self.page[base..base + INTERNAL_NODE_RIGHT_CHILD_SIZE]
+    }
+
+    pub fn set_root_node(&mut self, root: bool) {
+        self.page[IS_ROOT_OFFSET] = match root {
+            false => 0u8,
+            true => 1u8,
+        }
     }
 }
 
 impl<G: Deref<Target = [u8]>> Node<G> {
     pub fn leaf_node_num_cells(&self) -> u32 {
+        assert!(self.get_node_type() == NodeKind::Leaf);
         let bytes: [u8; 4] = self.page[LEAF_NODE_NUM_CELLS_OFFSET..LEAF_NODE_NUM_CELLS_OFFSET + 4]
             .try_into()
             .unwrap();
         u32::from_be_bytes(bytes)
     }
-    pub fn leaf_node_key(&self, cell_num: usize) -> u32 {
+
+    pub fn get_leaf_node_key(&self, cell_num: usize) -> u32 {
+        assert!(self.get_node_type() == NodeKind::Leaf);
         let base = LEAF_NODE_HEADER_SIZE + cell_num * LEAF_NODE_CELL_SIZE;
         let bytes: [u8; 4] = self.page[base..base + 4].try_into().unwrap();
         u32::from_be_bytes(bytes)
@@ -127,6 +230,72 @@ impl<G: Deref<Target = [u8]>> Node<G> {
         match self.page[NODE_TYPE_OFFSET] {
             0 => NodeKind::Internal,
             1 => NodeKind::Leaf,
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn get_internal_node_num_keys(&self) -> u32 {
+        assert!(self.get_node_type() == NodeKind::Internal);
+        let bytes: [u8; 4] = self.page[INTERNAL_NODE_NUM_KEYS_OFFSET
+            ..INTERNAL_NODE_NUM_KEYS_OFFSET + INTERNAL_NODE_NUM_KEY_SIZE]
+            .try_into()
+            .unwrap();
+        u32::from_be_bytes(bytes)
+    }
+
+    pub fn get_internal_node_child(&self, child_num: usize) -> u32 {
+        assert!(self.get_node_type() == NodeKind::Internal);
+        let num_keys = self.get_internal_node_num_keys() as usize;
+        if child_num > num_keys {
+            println!("Tried to access child_num {child_num} > num_keys {num_keys}");
+            std::process::exit(1);
+        } else if child_num == num_keys {
+            self.get_internal_node_right_child()
+        } else {
+            let bytes: [u8; 4] = self.get_internal_node_cell(child_num)[..INTERNAL_NODE_CHILD_SIZE]
+                .try_into()
+                .unwrap();
+            u32::from_be_bytes(bytes)
+        }
+    }
+
+    pub fn get_internal_node_right_child(&self) -> u32 {
+        assert!(self.get_node_type() == NodeKind::Internal);
+        let bytes: [u8; 4] = self.page[INTERNAL_NODE_RIGHT_CHILD_OFFSET
+            ..INTERNAL_NODE_RIGHT_CHILD_OFFSET + INTERNAL_NODE_RIGHT_CHILD_SIZE]
+            .try_into()
+            .unwrap();
+        u32::from_be_bytes(bytes)
+    }
+
+    pub fn get_internal_node_cell(&self, cell_num: usize) -> &[u8] {
+        assert!(self.get_node_type() == NodeKind::Internal);
+        let base = INTERNAL_NODE_HEADER_SIZE + cell_num * INTERNAL_NODE_CELL_SIZE;
+        &self.page[base..base + INTERNAL_NODE_CELL_SIZE]
+    }
+
+    pub fn get_internal_node_key(&self, key_num: usize) -> u32 {
+        assert!(self.get_node_type() == NodeKind::Internal);
+        let base = INTERNAL_NODE_HEADER_SIZE
+            + key_num * INTERNAL_NODE_CELL_SIZE
+            + INTERNAL_NODE_CHILD_SIZE;
+        let bytes: [u8; 4] = self.page[base..base + 4].try_into().unwrap();
+        u32::from_be_bytes(bytes)
+    }
+
+    pub fn get_node_max_key(&self) -> u32 {
+        match self.get_node_type() {
+            NodeKind::Internal => {
+                self.get_internal_node_key(self.get_internal_node_num_keys() as usize - 1)
+            }
+            NodeKind::Leaf => self.get_leaf_node_key(self.leaf_node_num_cells() as usize - 1),
+        }
+    }
+
+    pub fn is_root_node(&self) -> bool {
+        match self.page[IS_ROOT_OFFSET] {
+            0 => false,
+            1 => true,
             _ => unreachable!(),
         }
     }
@@ -274,26 +443,16 @@ impl Table {
         })
     }
 
+    pub fn num_pages(&self) -> usize {
+        self.pager.num_pages.get()
+    }
+
     pub fn get_page(&self, page_num: usize) -> Result<Option<Ref<'_, [u8]>>, TableError> {
         Ok(self.pager.get_page(page_num)?)
     }
 
     pub fn get_page_mut(&self, page_num: usize) -> Result<RefMut<'_, [u8]>, TableError> {
         Ok(self.pager.get_page_mut(page_num)?)
-    }
-
-    pub fn len(&self) -> usize {
-        self.root_node_num_cells()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    pub fn root_node_num_cells(&self) -> usize {
-        self.get_node_mut(self.root_page_num)
-            .unwrap()
-            .leaf_node_num_cells() as usize
     }
 
     pub fn get_node(&self, page_num: usize) -> Result<Option<Node<Ref<'_, [u8]>>>, TableError> {
@@ -306,6 +465,14 @@ impl Table {
 
     pub fn root_page_num(&self) -> usize {
         self.root_page_num
+    }
+
+    pub fn is_empty(&self) -> bool {
+        let node = self.get_node_mut(self.root_page_num).unwrap();
+        match node.get_node_type() {
+            NodeKind::Internal => false,
+            NodeKind::Leaf => node.leaf_node_num_cells() == 0,
+        }
     }
 
     pub fn get_leaf_value_mut(
@@ -332,11 +499,65 @@ impl Table {
     }
 
     pub fn flush_all(&self) -> Result<(), TableError> {
-        for page_num in 0..self.len() {
+        for page_num in 0..self.num_pages() {
             if self.pager.is_cached(page_num) {
                 self.pager.pager_flush(page_num)?;
             }
         }
+        Ok(())
+    }
+
+    pub fn get_unused_page_num(&self) -> usize {
+        self.pager.num_pages.get()
+    }
+
+    pub fn create_new_root(&self, right_child_page_num: usize) -> Result<(), TableError> {
+        let mut root = self.get_node_mut(self.root_page_num)?;
+        let right_child = self.get_node_mut(right_child_page_num)?;
+        let left_child_page_num = self.get_unused_page_num();
+        let mut left_child = self.get_node_mut(left_child_page_num)?;
+
+        left_child.page.copy_from_slice(&root.page);
+
+        root.initialize_internal_node();
+        root.set_internal_node_num_keys(1);
+        root.set_internal_node_child(0, left_child_page_num);
+        let left_child_max_key = left_child.get_node_max_key();
+        root.set_internal_node_key(0, left_child_max_key);
+        root.set_internal_node_right_child(right_child_page_num);
+
+        Ok(())
+    }
+
+    fn indent(level: usize) {
+        print!("{}", "  ".repeat(level));
+    }
+    pub fn print_tree(&self, page_num: usize, indentation_level: usize) -> Result<(), TableError> {
+        let node = self.get_node_mut(page_num)?;
+        match node.get_node_type() {
+            NodeKind::Leaf => {
+                let num_keys = node.leaf_node_num_cells();
+                Self::indent(indentation_level);
+                println!("- leaf (size {num_keys})");
+                for i in 0..num_keys as usize {
+                    Self::indent(indentation_level + 1);
+                    println!("- {}", node.get_leaf_node_key(i));
+                }
+            }
+            NodeKind::Internal => {
+                let num_keys = node.get_internal_node_num_keys();
+                Self::indent(indentation_level);
+                println!("- internal (size {num_keys})");
+                for i in 0..num_keys as usize {
+                    let child = node.get_internal_node_child(i);
+                    self.print_tree(child as usize, indentation_level + 1)?;
+                    Self::indent(indentation_level + 1);
+                    println!("- key {}", node.get_internal_node_key(i));
+                }
+                let right_child = node.get_internal_node_right_child();
+                self.print_tree(right_child as usize, indentation_level + 1)?;
+            }
+        };
         Ok(())
     }
 }
