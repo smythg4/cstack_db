@@ -28,5 +28,5 @@ to the follow-up DBMS project, not here.
 - [x] Part 3-5: single-table storage, persistence
 - [x] Part 6-7: cursor abstraction
 - [x] Part 8-10: B-tree leaf nodes
-- [ ] Part 11-13: B-tree internal nodes, splitting
+- [x] Part 11-13: B-tree internal nodes, splitting
 - [ ] Part 14: duplicate keys, scanning

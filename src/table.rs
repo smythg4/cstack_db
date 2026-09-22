@@ -22,6 +22,8 @@ pub enum PagerError {
 pub enum TableError {
     #[error(transparent)]
     PagerError(#[from] PagerError),
+    #[error("Need to implement splitting internal node")]
+    InternalNodeFull,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -74,6 +76,7 @@ pub const INTERNAL_NODE_HEADER_SIZE: usize =
 pub const INTERNAL_NODE_KEY_SIZE: usize = size_of::<u32>();
 pub const INTERNAL_NODE_CHILD_SIZE: usize = size_of::<u32>();
 pub const INTERNAL_NODE_CELL_SIZE: usize = INTERNAL_NODE_CHILD_SIZE + INTERNAL_NODE_KEY_SIZE;
+pub const INTERNAL_NODE_MAX_CELLS: usize = 3;
 
 pub struct Node<G> {
     page: G,
@@ -123,11 +126,18 @@ impl<G: DerefMut<Target = [u8]>> Node<G> {
         &mut cell[LEAF_NODE_KEY_SIZE..]
     }
 
-    pub fn copy_cell(&mut self, from_cell: usize, to_cell: usize) {
+    pub fn copy_leaf_cell(&mut self, from_cell: usize, to_cell: usize) {
         let from_base = LEAF_NODE_HEADER_SIZE + from_cell * LEAF_NODE_CELL_SIZE;
         let to_base = LEAF_NODE_HEADER_SIZE + to_cell * LEAF_NODE_CELL_SIZE;
         self.page
             .copy_within(from_base..from_base + LEAF_NODE_CELL_SIZE, to_base);
+    }
+
+    pub fn copy_internal_cell(&mut self, from_cell: usize, to_cell: usize) {
+        let from_base = INTERNAL_NODE_HEADER_SIZE + from_cell * INTERNAL_NODE_CELL_SIZE;
+        let to_base = INTERNAL_NODE_HEADER_SIZE + to_cell * INTERNAL_NODE_CELL_SIZE;
+        self.page
+            .copy_within(from_base..from_base + INTERNAL_NODE_CELL_SIZE, to_base);
     }
 
     pub fn copy_cell_from<G2: Deref<Target = [u8]>>(
@@ -219,6 +229,11 @@ impl<G: DerefMut<Target = [u8]>> Node<G> {
             true => 1u8,
         }
     }
+
+    pub fn set_node_parent(&mut self, parent_id: u32) {
+        self.page[PARENT_POINTER_OFFSET..PARENT_POINTER_OFFSET + PARENT_POINTER_SIZE]
+            .copy_from_slice(&parent_id.to_be_bytes())
+    }
 }
 
 impl<G: Deref<Target = [u8]>> Node<G> {
@@ -294,6 +309,22 @@ impl<G: Deref<Target = [u8]>> Node<G> {
         u32::from_be_bytes(bytes)
     }
 
+    pub fn internal_node_find_child(&self, key: u32) -> usize {
+        assert!(self.get_node_type() == NodeKind::Internal);
+        let num_keys = self.get_internal_node_num_keys() as usize;
+        let mut min_index = 0;
+        let mut max_index = num_keys;
+        while min_index != max_index {
+            let index = (min_index + max_index) / 2;
+            if self.get_internal_node_key(index) >= key {
+                max_index = index;
+            } else {
+                min_index = index + 1;
+            }
+        }
+        min_index
+    }
+
     pub fn get_node_max_key(&self) -> u32 {
         match self.get_node_type() {
             NodeKind::Internal => {
@@ -315,6 +346,14 @@ impl<G: Deref<Target = [u8]>> Node<G> {
         assert!(self.get_node_type() == NodeKind::Leaf);
         let bytes: [u8; 4] = self.page
             [LEAF_NODE_NEXT_LEAF_OFFSET..LEAF_NODE_NEXT_LEAF_OFFSET + LEAF_NODE_NEXT_LEAF_SIZE]
+            .try_into()
+            .unwrap();
+        u32::from_be_bytes(bytes)
+    }
+
+    pub fn get_node_parent(&self) -> u32 {
+        let bytes: [u8; 4] = self.page
+            [PARENT_POINTER_OFFSET..PARENT_POINTER_OFFSET + PARENT_POINTER_SIZE]
             .try_into()
             .unwrap();
         u32::from_be_bytes(bytes)
@@ -533,9 +572,13 @@ impl Table {
 
     pub fn create_new_root(&self, right_child_page_num: usize) -> Result<(), TableError> {
         let mut root = self.get_node_mut(self.root_page_num)?;
-        let right_child = self.get_node_mut(right_child_page_num)?;
+        let mut right_child = self.get_node_mut(right_child_page_num)?;
+
         let left_child_page_num = self.get_unused_page_num();
         let mut left_child = self.get_node_mut(left_child_page_num)?;
+
+        right_child.set_node_parent(self.root_page_num as u32);
+        left_child.set_node_parent(self.root_page_num as u32);
 
         left_child.page.copy_from_slice(&root.page);
 
@@ -545,6 +588,47 @@ impl Table {
         let left_child_max_key = left_child.get_node_max_key();
         root.set_internal_node_key(0, left_child_max_key);
         root.set_internal_node_right_child(right_child_page_num);
+
+        Ok(())
+    }
+
+    pub fn internal_node_insert(
+        &self,
+        parent_page_num: usize,
+        child_page_num: usize,
+    ) -> Result<(), TableError> {
+        let child_max_key = {
+            let child = self.get_node_mut(child_page_num)?;
+            child.get_node_max_key()
+        }; // child's guard drops here — we only needed one value out of it
+        let mut parent = self.get_node_mut(parent_page_num)?;
+        let index = parent.internal_node_find_child(child_max_key);
+
+        let original_num_keys = parent.get_internal_node_num_keys() as usize;
+        if original_num_keys >= INTERNAL_NODE_MAX_CELLS {
+            return Err(TableError::InternalNodeFull);
+        }
+        parent.set_internal_node_num_keys(original_num_keys + 1);
+
+        let right_child_page_num = parent.get_internal_node_right_child() as usize;
+        let right_child_max_key = {
+            let right_child = self.get_node_mut(right_child_page_num)?;
+            right_child.get_node_max_key()
+        }; // same treatment — drop before continuing
+
+        if child_max_key > right_child_max_key {
+            // new child becomes the rightmost; old right child moves into a regular cell
+            parent.set_internal_node_child(original_num_keys, right_child_page_num);
+            parent.set_internal_node_key(original_num_keys, right_child_max_key);
+            parent.set_internal_node_right_child(child_page_num);
+        } else {
+            // make room for the new cell
+            for i in (index + 1..=original_num_keys).rev() {
+                parent.copy_internal_cell(i - 1, i);
+            }
+            parent.set_internal_node_child(index, child_page_num);
+            parent.set_internal_node_key(index, child_max_key);
+        }
 
         Ok(())
     }
