@@ -4,7 +4,7 @@ use crate::errors::*;
 use crate::row::{Row, VarChar};
 use crate::table::{
     COMMON_NODE_HEADER_SIZE, LEAF_NODE_CELL_SIZE, LEAF_NODE_HEADER_SIZE, LEAF_NODE_MAX_CELLS,
-    LEAF_NODE_SPACE_FOR_CELLS, Table,
+    LEAF_NODE_SPACE_FOR_CELLS, Table, TableError,
 };
 use std::io::{BufReader, Write};
 use std::io::{Lines, Stdin};
@@ -96,7 +96,9 @@ pub fn execute_insert(row: Row, table: &Table) -> Result<(), ExecuteError> {
     let cursor = Cursor::table_find(table, key_to_insert)?;
     match cursor.leaf_node_insert(row.id, &row) {
         Ok(_) => {}
-        Err(CursorError::DuplicateKey(_)) => return Err(ExecuteError::DuplicateKey),
+        Err(CursorError::TableError(TableError::DuplicateKey(_))) => {
+            return Err(ExecuteError::DuplicateKey);
+        }
         Err(e) => return Err(e.into()),
     }
     Ok(())
